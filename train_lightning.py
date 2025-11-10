@@ -203,15 +203,14 @@ def main():
         enable_progress_bar=True,
         enable_model_summary=True,
         deterministic=False,
-        benchmark=True,
-        resume_from_checkpoint=args.resume
+        benchmark=True
     )
     
     print("Starting training...")
     print(f"Training for {max_epochs} epochs on {gpus} GPU(s)")
     
     # Start training
-    trainer.fit(model, datamodule=data_module)
+    trainer.fit(model, datamodule=data_module, ckpt_path=args.resume)
     
     print("Training completed!")
     print(f"Best model saved at: {trainer.checkpoint_callback.best_model_path}")
