@@ -106,15 +106,15 @@ def setup_callbacks(config: dict, output_dir: str) -> list:
     trainer_config = config.get('trainer', {})
     callbacks = []
     
-    # Model checkpoint callback
+    # Model checkpoint callback - only save the best model
     checkpoint_callback = ModelCheckpoint(
         dirpath=os.path.join(output_dir, 'checkpoints'),
-        filename='causalformer-{epoch:02d}-{val_loss:.4f}',
+        filename='best_model',
         monitor='val_loss',
         mode='min',
-        save_top_k=3,
-        save_last=True,
-        verbose=True
+        save_top_k=1,  # Only save the best model
+        save_last=False,  # Don't save last model
+        verbose=False  # Disable verbose output to avoid tqdm interference
     )
     callbacks.append(checkpoint_callback)
     
@@ -123,10 +123,14 @@ def setup_callbacks(config: dict, output_dir: str) -> list:
     if early_stop > 0:
         early_stopping_callback = EarlyStopping(
             monitor='val_loss',
-            min_delta=0.00,
+            min_delta=0.001,  # Small improvement threshold
             patience=early_stop,
-            verbose=True,
-            mode='min'
+            verbose=False,    # Disable verbose to avoid tqdm interference
+            mode='min',
+            check_finite=True,  # Stop if metric becomes NaN/infinite
+            stopping_threshold=None,  # Optional: stop when metric reaches this value
+            divergence_threshold=None,  # Optional: stop when metric becomes worse than this
+            check_on_train_epoch_end=False  # Check at validation end
         )
         callbacks.append(early_stopping_callback)
     
@@ -191,19 +195,26 @@ def main():
     else:
         max_epochs = trainer_config.get('epochs', 100)
     
+    # Set float32 matmul precision for better performance on NVIDIA GPUs
+    torch.set_float32_matmul_precision('medium')
+    
     trainer = pl.Trainer(
         max_epochs=max_epochs,
         accelerator='auto',
         devices=gpus if gpus > 0 else 1,
         callbacks=callbacks,
         logger=logger,
-        log_every_n_steps=10,
+        log_every_n_steps=5,  # More frequent logging for small datasets
         strategy='auto',
         precision=32,
         enable_progress_bar=True,
         enable_model_summary=True,
         deterministic=False,
-        benchmark=True
+        benchmark=True,
+        # Additional performance optimizations
+        accumulate_grad_batches=1,
+        gradient_clip_val=None,
+        gradient_clip_algorithm='norm'
     )
     
     print("Starting training...")

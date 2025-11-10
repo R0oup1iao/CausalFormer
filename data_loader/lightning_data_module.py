@@ -171,3 +171,10 @@ class CausalFormerDataModule(pl.LightningDataModule):
             )
             sample_input, _ = temp_dataset[0]
             return sample_input.shape[1]
+    
+    @property
+    def df_data(self):
+        """Get the original DataFrame data for column names"""
+        if not hasattr(self, '_df_data'):
+            self._df_data = pd.read_csv(self.data_dir)
+        return self._df_data
