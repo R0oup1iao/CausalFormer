@@ -2,6 +2,8 @@ import pytorch_lightning as pl
 import torch
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
 from typing import Dict, Any, Optional, List, Tuple
 from sklearn.cluster import KMeans
 
@@ -107,8 +109,7 @@ class CausalInterpretLightningModule(pl.LightningModule):
         
         # Convert to tensor and move to device, and require gradients
         device = next(self.trained_model.parameters()).device
-        data_tensor = torch.tensor(all_data, dtype=torch.float).to(device)
-        data_tensor.requires_grad_(True)  # Enable gradients for RRP
+        data_tensor = torch.tensor(all_data, dtype=torch.float, requires_grad=True).to(device)
         
         # Perform causal discovery
         self._perform_causal_discovery(data_tensor)
@@ -119,6 +120,9 @@ class CausalInterpretLightningModule(pl.LightningModule):
         
         # Log all metrics
         self._log_causal_metrics()
+        
+        # Add TensorBoard visualization
+        self._add_tensorboard_visualization()
 
     def run_causal_discovery(self, data_loader) -> None:
         """
@@ -137,26 +141,17 @@ class CausalInterpretLightningModule(pl.LightningModule):
             print("No data available for causal discovery")
             return
         
-        # Combine all test data - use mean aggregation like original version for better results
+        # Combine all test data - use all samples like original version
         all_data = np.concatenate(test_data, axis=0)
         all_labels = np.concatenate(test_labels, axis=0)
         
         print(f"Data shape: {all_data.shape}")
         print(f"Labels shape: {all_labels.shape}")
         
-        # Use mean aggregation like original version for better causal discovery
-        # This helps reduce noise and get more stable causal relationships
-        if len(all_data) > 1:
-            print("Using mean aggregation for causal discovery (like original version)")
-            data_mean = np.mean(all_data, axis=0, keepdims=True)
-            labels_mean = np.mean(all_labels, axis=0, keepdims=True)
-        else:
-            data_mean = all_data
-            labels_mean = all_labels
-        
-        # Convert to tensor and move to device, and require gradients
+        # Use all data samples like original version (no mean aggregation)
+        # Original version never uses mean aggregation (bigdata is always False)
         device = next(self.trained_model.parameters()).device
-        data_tensor = torch.tensor(data_mean, dtype=torch.float).to(device)
+        data_tensor = torch.tensor(all_data, dtype=torch.float).to(device)
         data_tensor.requires_grad_(True)  # Enable gradients for RRP
         
         # Perform causal discovery
@@ -369,6 +364,109 @@ class CausalInterpretLightningModule(pl.LightningModule):
             Dictionary containing all evaluation metrics
         """
         return self.test_metrics
+
+    def _add_tensorboard_visualization(self) -> None:
+        """
+        Add TensorBoard visualization for causal discovery results.
+        """
+        if not hasattr(self, 'logger') or not hasattr(self.logger, 'experiment'):
+            print("Warning: No TensorBoard logger available for visualization")
+            return
+        
+        try:
+            # Create causal graph heatmap
+            self._create_causal_heatmap()
+            
+            # Add text summary of causal relationships
+            self._add_causal_text_summary()
+            
+            print("TensorBoard visualization added successfully")
+            
+        except Exception as e:
+            print(f"Warning: Failed to create TensorBoard visualization: {e}")
+
+    def _create_causal_heatmap(self) -> None:
+        """
+        Create and add causal graph heatmap to TensorBoard.
+        """
+        # Create causal adjacency matrix
+        causal_matrix = np.zeros((self.series_num, self.series_num))
+        delay_matrix = np.zeros((self.series_num, self.series_num))
+        
+        # Fill matrices with discovered causal relationships
+        for cause, effect, delay in self.causal_results:
+            causal_matrix[cause, effect] = 1.0
+            delay_matrix[cause, effect] = delay
+        
+        # Create the heatmap figure
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+        
+        # Plot causal adjacency heatmap
+        sns.heatmap(causal_matrix, annot=True, fmt='.0f', cmap='RdYlBu_r', 
+                   cbar=True, square=True, ax=ax1)
+        ax1.set_title('Causal Adjacency Matrix')
+        ax1.set_xlabel('Effect')
+        ax1.set_ylabel('Cause')
+        
+        # Set axis labels if column names are available
+        if self.columns:
+            ax1.set_xticklabels(self.columns, rotation=45, ha='right')
+            ax1.set_yticklabels(self.columns, rotation=0)
+        
+        # Plot delay heatmap (only for discovered relationships)
+        mask = causal_matrix == 0
+        sns.heatmap(delay_matrix, annot=True, fmt='.0f', cmap='viridis',
+                   cbar=True, square=True, ax=ax2, mask=mask)
+        ax2.set_title('Causal Delay Matrix')
+        ax2.set_xlabel('Effect')
+        ax2.set_ylabel('Cause')
+        
+        # Set axis labels if column names are available
+        if self.columns:
+            ax2.set_xticklabels(self.columns, rotation=45, ha='right')
+            ax2.set_yticklabels(self.columns, rotation=0)
+        
+        plt.tight_layout()
+        
+        # Add figure to TensorBoard
+        self.logger.experiment.add_figure(
+            'Causal Discovery/Heatmaps', 
+            fig, 
+            global_step=self.global_step
+        )
+        
+        plt.close(fig)
+
+    def _add_causal_text_summary(self) -> None:
+        """
+        Add text summary of causal relationships to TensorBoard.
+        """
+        if not self.causal_results:
+            text_content = "No causal relationships discovered."
+        else:
+            text_content = "Discovered Causal Relationships:\n\n"
+            for cause, effect, delay in self.causal_results:
+                cause_name = self.columns[cause] if self.columns else f"Series_{cause}"
+                effect_name = self.columns[effect] if self.columns else f"Series_{effect}"
+                text_content += f"  {cause_name} -> {effect_name} (delay: {delay})\n"
+        
+        # Add evaluation metrics if available
+        if self.ground_truth:
+            text_content += f"\nEvaluation Metrics:\n"
+            text_content += f"  Precision': {self.test_metrics['precision_prime']:.4f}\n"
+            text_content += f"  Recall': {self.test_metrics['recall_prime']:.4f}\n"
+            text_content += f"  F1': {self.test_metrics['f1_prime']:.4f}\n"
+            text_content += f"  Precision: {self.test_metrics['precision']:.4f}\n"
+            text_content += f"  Recall: {self.test_metrics['recall']:.4f}\n"
+            text_content += f"  F1: {self.test_metrics['f1']:.4f}\n"
+            text_content += f"  PoD: {self.test_metrics['pod']:.2f}%\n"
+        
+        # Add text to TensorBoard
+        self.logger.experiment.add_text(
+            'Causal Discovery/Summary',
+            text_content,
+            global_step=self.global_step
+        )
 
     def configure_optimizers(self):
         """

@@ -179,11 +179,12 @@ def main():
     else:
         print("No ground truth provided - will only perform causal discovery without evaluation")
     
-    # Use direct method instead of Lightning test workflow
+    # Use direct method for causal discovery (Lightning test workflow has gradient issues)
+    print("Starting causal discovery with direct method...")
     test_loader = data_module.test_dataloader()
     interpret_model.run_causal_discovery(test_loader)
     
-    # Get results
+    # Get results after causal discovery
     causal_results = interpret_model.get_causal_results()
     evaluation_metrics = interpret_model.get_evaluation_metrics()
     columns = interpret_model.columns if interpret_model.columns else [f"Series_{i}" for i in range(interpret_model.series_num)]

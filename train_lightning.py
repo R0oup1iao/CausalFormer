@@ -143,14 +143,15 @@ def setup_callbacks(config: dict, output_dir: str) -> list:
 
 
 def setup_logger(config: dict, output_dir: str) -> TensorBoardLogger:
-    """Setup TensorBoard logger"""
+    """Setup TensorBoard logger with automatic versioning"""
     name = config.get('name', 'CausalFormer')
-    version = config.get('version', 'lightning')
     
+    # Use automatic versioning to avoid overwriting previous experiments
+    # This will create version_0, version_1, etc. directories
     return TensorBoardLogger(
         save_dir=os.path.join(output_dir, 'logs'),
         name=name,
-        version=version
+        version=None  # None enables automatic versioning
     )
 
 
