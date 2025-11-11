@@ -7,6 +7,7 @@ import os
 import sys
 import torch
 import pytorch_lightning as pl
+from pytorch_lightning import seed_everything
 
 # Add current directory to path to import modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -18,6 +19,9 @@ from model.lightning_module import CausalFormerLightningModule
 def test_data_module():
     """Test the data module with a small dataset"""
     print("Testing Data Module...")
+    
+    # Set random seeds for reproducibility
+    seed_everything(123, workers=True)
     
     try:
         # Use a small dataset for testing

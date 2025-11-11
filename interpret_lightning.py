@@ -14,14 +14,7 @@ import numpy as np
 from data_loader.lightning_data_module import CausalFormerDataModule
 from model.lightning_module import CausalFormerLightningModule
 from model.interpret_lightning_module import CausalInterpretLightningModule
-
-
-def set_random_seed(seed=123):
-    """Set random seeds for reproducibility"""
-    torch.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    np.random.seed(seed)
+from pytorch_lightning import seed_everything
 
 
 def parse_args():
@@ -142,7 +135,7 @@ def main():
     args = parse_args()
     
     # Set random seeds for reproducibility (same as original version)
-    set_random_seed(123)
+    seed_everything(123, workers=True)
     
     # Load configuration
     config = load_config(args.config)
@@ -172,6 +165,12 @@ def main():
     else:
         gpus = config.get('n_gpu', 1)
     
+    # Setup logger for TensorBoard logging
+    logger = pl.loggers.TensorBoardLogger(
+        save_dir=args.output_dir,
+        name="causal_discovery"
+    )
+    
     print("Starting causal discovery...")
     print(f"Using {gpus} GPU(s)")
     
@@ -187,12 +186,29 @@ def main():
     # Get results
     causal_results = interpret_model.get_causal_results()
     evaluation_metrics = interpret_model.get_evaluation_metrics()
+    columns = interpret_model.columns if interpret_model.columns else [f"Series_{i}" for i in range(interpret_model.series_num)]
     
     print("\n" + "="*50)
     print("Causal Discovery Completed!")
     print("="*50)
     print(f"Discovered {len(causal_results)} causal relationships")
     
+    # Save causal relationships to CSV file
+    results_file = os.path.join(args.output_dir, "causal_discovery_results.csv")
+    import pandas as pd
+    if causal_results:
+        df = pd.DataFrame([
+            (columns[cause] if columns else f"Series_{cause}",
+             columns[effect] if columns else f"Series_{effect}",
+             delay)
+            for cause, effect, delay in causal_results
+        ], columns=["Cause", "Effect", "Delay"])
+        df.to_csv(results_file, index=False)
+    else:
+        # Create empty file with headers
+        pd.DataFrame(columns=["Cause", "Effect", "Delay"]).to_csv(results_file, index=False)
+    
+    # Log evaluation metrics to TensorBoard
     if args.ground_truth:
         print("\nEvaluation Metrics Summary:")
         print(f"  Precision': {evaluation_metrics['precision_prime']:.4f}")
@@ -202,8 +218,24 @@ def main():
         print(f"  Recall: {evaluation_metrics['recall']:.4f}")
         print(f"  F1: {evaluation_metrics['f1']:.4f}")
         print(f"  PoD: {evaluation_metrics['pod']:.2f}%")
+        
+        # Log metrics to TensorBoard using the proper method
+        # We need to create a trainer to properly log to TensorBoard
+        trainer = pl.Trainer(
+            accelerator='auto',
+            devices=1,
+            logger=logger,
+            enable_checkpointing=False,
+            enable_progress_bar=False,
+            enable_model_summary=False
+        )
+        
+        # Log the metrics
+        trainer.logger.log_metrics(evaluation_metrics)
+        trainer.logger.save()
     
     print(f"\nResults saved to: {args.output_dir}")
+    print(f"CSV results saved to: {results_file}")
     print("All done!")
 
 

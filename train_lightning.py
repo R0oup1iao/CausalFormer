@@ -10,6 +10,7 @@ import torch
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
 from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning import seed_everything
 
 from data_loader.lightning_data_module import CausalFormerDataModule
 from model.lightning_module import CausalFormerLightningModule
@@ -156,6 +157,9 @@ def setup_logger(config: dict, output_dir: str) -> TensorBoardLogger:
 def main():
     """Main training function"""
     args = parse_args()
+    
+    # Set random seeds for reproducibility
+    seed_everything(123, workers=True)
     
     # Load configuration
     config = load_config(args.config)

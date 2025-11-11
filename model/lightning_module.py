@@ -215,16 +215,31 @@ class CausalFormerLightningModule(pl.LightningModule):
         """Extract attention weights for interpretability"""
         attention_weights = {}
         
-        # Extract weights from causal convolution
-        if hasattr(self.model.encoder.layers[0].attention.Wv, 'get_wgt'):
-            causal_conv_weights = self.model.encoder.layers[0].attention.Wv.get_wgt()
-            if causal_conv_weights is not None:
-                attention_weights['causal_conv'] = causal_conv_weights
+        # Handle multiple encoder layers (consistent with original implementation)
+        relAs = []
+        relKs = []
         
-        # Extract weights from multi-variate causal attention
-        if hasattr(self.model.encoder.layers[0].attention.attention, 'get_wgt'):
-            attention_weights_attn = self.model.encoder.layers[0].attention.attention.get_wgt()
-            if attention_weights_attn is not None:
-                attention_weights['multi_variate_attention'] = attention_weights_attn
+        # Collect weights from all encoder layers
+        for layer in self.model.encoder.layers:
+            # Extract weights from causal convolution
+            if hasattr(layer.attention.Wv, 'get_wgt'):
+                causal_conv_weights = layer.attention.Wv.get_wgt()
+                if causal_conv_weights is not None:
+                    relKs.append(causal_conv_weights)
+            
+            # Extract weights from multi-variate causal attention
+            if hasattr(layer.attention.attention, 'get_wgt'):
+                attention_weights_attn = layer.attention.attention.get_wgt()
+                if attention_weights_attn is not None:
+                    relAs.append(attention_weights_attn)
+        
+        # Combine weights from all layers (following original logic)
+        if relKs:
+            # For causal convolution weights, we take the product across layers
+            attention_weights['causal_conv'] = torch.stack(relKs).prod(0)
+            
+        if relAs:
+            # For attention weights, we take the product across layers
+            attention_weights['multi_variate_attention'] = torch.stack(relAs).prod(0)
         
         return attention_weights

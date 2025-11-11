@@ -129,7 +129,9 @@ class CausalConv(BaseModel):
         kernel.register_hook(self.save_grad)
 
         x = self.mul([kernel ,x])
-        x = x / self.base # due to plenty of padding, the base (number of non-zero elements) revise should be employed.
+        # Ensure base tensor is on the same device as x for distributed training
+        base = self.base.to(x.device)
+        x = x / base # due to plenty of padding, the base (number of non-zero elements) revise should be employed.
         # considering instantaneous causality, rolling is needed to hidden temporal self information for each series.
         for i in range(self.series_num):
             x[:,:,i,i,:,:] = x[:,:,i,i,:,:].roll(1, dims=2)
