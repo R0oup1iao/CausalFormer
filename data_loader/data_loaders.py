@@ -22,7 +22,7 @@ class TimeseriesDataLoader(BaseDataLoader):
         self.output_dim = output_dim
         
         # zoom data for regression relevance propogation
-        scaler = preprocessing.MinMaxScaler(feature_range=[0.5,1])
+        scaler = preprocessing.MinMaxScaler(feature_range=(0.5,1))
         self.data = scaler.fit_transform(self.data)
         
         # construct input samples
