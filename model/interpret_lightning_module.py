@@ -52,8 +52,11 @@ class CausalInterpretLightningModule(pl.LightningModule):
         
         assert self.m < self.n, "the number of selected top m clusters must be smaller than the total number of n clusters"
         
-        # Initialize RRP attribution generator
-        self.attribution_generator = RRP(self.trained_model)
+        # Initialize RRP attribution generator (only if trained_model is provided)
+        if self.trained_model is not None:
+            self.attribution_generator = RRP(self.trained_model)
+        else:
+            self.attribution_generator = None
         
         # Storage for causal results
         self.causal_results = []
@@ -77,42 +80,44 @@ class CausalInterpretLightningModule(pl.LightningModule):
             'fn': 0
         }
 
-    def test_step(self, batch: tuple, batch_idx: int) -> None:
+    def training_step(self, batch: tuple, batch_idx: int) -> Dict[str, torch.Tensor]:
         """
         Perform causal discovery on a batch of data.
-        This method collects data for causal analysis but defers actual analysis
-        to on_test_epoch_end to have access to all data.
+        This method processes data in batches and stores intermediate results for final analysis.
         """
         data, _ = batch
-        
-        # Store data for later analysis
-        if not hasattr(self, 'test_data'):
-            self.test_data = []
-            self.test_labels = []
-        
-        self.test_data.append(data.cpu().numpy())
         
         # Store column names if not already stored
         if not self.columns and hasattr(self.trainer.datamodule, 'df_data'):
             self.columns = list(self.trainer.datamodule.df_data.columns)
+        
+        # Process the batch and store intermediate results
+        batch_relA, batch_relK = self._process_batch_for_causal_discovery(data)
+        
+        # Store results for final aggregation
+        if not hasattr(self, 'training_relA'):
+            self.training_relA = []
+            self.training_relK = []
+        
+        self.training_relA.append(batch_relA)
+        self.training_relK.append(batch_relK)
+        
+        # Return dummy loss for training loop compatibility
+        return {'loss': torch.tensor(0.0, requires_grad=True)}
 
-    def on_test_epoch_end(self) -> None:
+    def on_train_epoch_end(self) -> None:
         """
-        Perform causal discovery analysis after all test data has been collected.
+        Perform causal discovery analysis after all training data has been processed.
         """
-        if not hasattr(self, 'test_data') or len(self.test_data) == 0:
-            self.logger.warning("No test data available for causal discovery")
+        if not hasattr(self, 'training_relA') or len(self.training_relA) == 0:
+            self.logger.warning("No training data available for causal discovery")
             return
         
-        # Combine all test data
-        all_data = np.concatenate(self.test_data, axis=0)
+        # Aggregate results from all batches
+        aggregated_relA, aggregated_relK = self._aggregate_batch_results()
         
-        # Convert to tensor and move to device, and require gradients
-        device = next(self.trained_model.parameters()).device
-        data_tensor = torch.tensor(all_data, dtype=torch.float, requires_grad=True).to(device)
-        
-        # Perform causal discovery
-        self._perform_causal_discovery(data_tensor)
+        # Perform causal discovery on aggregated results
+        self._perform_causal_discovery_from_aggregated(aggregated_relA, aggregated_relK)
         
         # Evaluate results if ground truth is available
         if self.ground_truth:
@@ -123,6 +128,85 @@ class CausalInterpretLightningModule(pl.LightningModule):
         
         # Add TensorBoard visualization
         self._add_tensorboard_visualization()
+
+    def _process_batch_for_causal_discovery(self, data: torch.Tensor) -> Tuple[List[np.ndarray], List[np.ndarray]]:
+        """
+        Process a single batch for causal discovery and return intermediate results.
+        
+        Args:
+            data: Input data tensor of shape (batch_size, time_step, series_num)
+            
+        Returns:
+            Tuple of (relA, relK) for the batch
+        """
+        batch_size = data.shape[0]
+        batch_relA = []
+        batch_relK = []
+        
+        # Ensure data requires gradients for RRP
+        data.requires_grad_(True)
+        
+        # Interpret each time series in the batch
+        for interpreted_series in range(self.series_num):
+            rel_a, rel_k = self.attribution_generator.generate_RRP(
+                batch_size, data, interpreted_series
+            )
+            
+            # Store relevance scores for this batch
+            batch_relA.append(rel_a.detach().cpu().numpy()[interpreted_series])
+            
+            # Process causal convolution relevance
+            relk_align = rel_k.detach().cpu().numpy()[:, interpreted_series, -1, :].copy()
+            # The relK[i][i][-1] is zero vector due to the time_step th data cannot be used 
+            # to predict the time_step th future itself.
+            relk_align[interpreted_series, :] = rel_k.detach().cpu().numpy()[
+                interpreted_series, interpreted_series, -2, :
+            ]
+            batch_relK.append(relk_align)
+        
+        return batch_relA, batch_relK
+
+    def _aggregate_batch_results(self) -> Tuple[List[np.ndarray], List[np.ndarray]]:
+        """
+        Aggregate results from all batches.
+        
+        Returns:
+            Tuple of aggregated (relA, relK) across all batches
+        """
+        # Initialize aggregated arrays
+        aggregated_relA = [np.zeros(self.series_num) for _ in range(self.series_num)]
+        aggregated_relK = [np.zeros((self.series_num, self.time_step)) for _ in range(self.series_num)]
+        
+        # Sum results from all batches
+        for batch_relA, batch_relK in zip(self.training_relA, self.training_relK):
+            for i in range(self.series_num):
+                aggregated_relA[i] += batch_relA[i]
+                aggregated_relK[i] += batch_relK[i]
+        
+        # Average the results (optional, depends on whether we want sum or average)
+        # For causal discovery, sum is usually sufficient as we're looking for patterns
+        # across all data
+        
+        return aggregated_relA, aggregated_relK
+
+    def _perform_causal_discovery_from_aggregated(self, relA: List[np.ndarray], relK: List[np.ndarray]) -> None:
+        """
+        Perform causal discovery using aggregated relevance scores.
+        
+        Args:
+            relA: List of aggregated relevance scores of attention matrix for each time series
+            relK: List of aggregated relevance scores of causal convolution kernels for each time series
+        """
+        # Analyze causal relationships
+        self.causal_results = self._analyze_causal_relationships(relA, relK)
+        
+        # Store causes and delays for evaluation
+        self.all_causes = {i: [] for i in range(self.series_num)}
+        self.all_delays = {}
+        
+        for causal in self.causal_results:
+            self.all_causes[causal[1]].append(causal[0])
+            self.all_delays[(causal[1], causal[0])] = causal[2]
 
     def run_causal_discovery(self, data_loader) -> None:
         """

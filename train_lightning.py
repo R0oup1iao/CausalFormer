@@ -8,7 +8,7 @@ import json
 import argparse
 import torch
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor, Callback
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning import seed_everything
 
@@ -24,8 +24,8 @@ def parse_args():
                         help='config file path (default: config/config_lorenz.json)')
     parser.add_argument('-d', '--data_dir', type=str, default=None,
                         help='override data directory from config')
-    parser.add_argument('-o', '--output_dir', type=str, default='saved/lightning_models',
-                        help='output directory for saved models (default: saved/lightning_models)')
+    parser.add_argument('-o', '--output_dir', type=str, default='saved/',
+                        help='output directory for saved models (default: saved/)')
     parser.add_argument('--gpus', type=int, default=None,
                         help='number of gpus to use (default: from config)')
     parser.add_argument('--max_epochs', type=int, default=None,
@@ -102,20 +102,24 @@ def setup_model(config: dict, data_module: CausalFormerDataModule) -> CausalForm
     )
 
 
-def setup_callbacks(config: dict, output_dir: str) -> list:
-    """Setup training callbacks"""
+def setup_callbacks(config: dict, output_dir: str, logger: TensorBoardLogger) -> list:
+    """Setup training callbacks with model saved in experiment directory"""
     trainer_config = config.get('trainer', {})
     callbacks = []
     
-    # Model checkpoint callback - only save the best model
+    # Get experiment directory path
+    experiment_dir = logger.log_dir
+    
+    # Model checkpoint callback - save to experiment directory
     checkpoint_callback = ModelCheckpoint(
-        dirpath=os.path.join(output_dir, 'checkpoints'),
-        filename='best_model',
+        dirpath=experiment_dir,      # Save directly to experiment directory
+        filename='best_model-{epoch:02d}-{val_loss:.4f}',
         monitor='val_loss',
         mode='min',
         save_top_k=1,  # Only save the best model
         save_last=False,  # Don't save last model
-        verbose=False  # Disable verbose output to avoid tqdm interference
+        verbose=False,  # Disable verbose output to avoid tqdm interference
+        auto_insert_metric_name=False
     )
     callbacks.append(checkpoint_callback)
     
@@ -139,19 +143,53 @@ def setup_callbacks(config: dict, output_dir: str) -> list:
     lr_monitor = LearningRateMonitor(logging_interval='epoch')
     callbacks.append(lr_monitor)
     
+    # Config saver callback - save JSON config to experiment directory
+    config_saver_callback = ConfigSaverCallback(config, experiment_dir)
+    callbacks.append(config_saver_callback)
+    
     return callbacks
 
 
-def setup_logger(config: dict, output_dir: str) -> TensorBoardLogger:
-    """Setup TensorBoard logger with automatic versioning"""
-    name = config.get('name', 'CausalFormer')
+class ConfigSaverCallback(Callback):
+    """Callback to save configuration as JSON file in experiment directory"""
     
-    # Use automatic versioning to avoid overwriting previous experiments
-    # This will create version_0, version_1, etc. directories
+    def __init__(self, config: dict, save_dir: str):
+        self.config = config
+        self.save_dir = save_dir
+    
+    def on_fit_start(self, trainer, pl_module):
+        """Save configuration at the start of training"""
+        # Ensure the experiment directory exists
+        os.makedirs(self.save_dir, exist_ok=True)
+        
+        # Save configuration as JSON
+        config_path = os.path.join(self.save_dir, 'config.json')
+        with open(config_path, 'w') as f:
+            json.dump(self.config, f, indent=2, ensure_ascii=False)
+        
+        print(f"Configuration saved to: {config_path}")
+
+
+def setup_logger(config: dict, output_dir: str) -> TensorBoardLogger:
+    """Setup TensorBoard logger with meaningful naming and auto-versioning"""
+    # Extract dataset name from data directory
+    data_dir = config['data_loader']['args']['data_dir']
+    dataset_name = os.path.basename(os.path.dirname(data_dir))
+    
+    # Create meaningful run name based on hyperparameters
+    arch_config = config['arch']['args']
+    optimizer_config = config['optimizer']['args']
+    run_prefix = f"lr{optimizer_config['lr']}_d{arch_config['d_model']}_h{arch_config['n_head']}"
+    
+    # Use clear directory structure: saved/predict_model/
+    predict_model_dir = os.path.join(output_dir, 'predict_model')
+    
+    # Use None for version to enable automatic versioning (version_0, version_1, etc.)
+    # This prevents overwriting when running the same config multiple times
     return TensorBoardLogger(
-        save_dir=os.path.join(output_dir, 'logs'),
-        name=name,
-        version=None  # None enables automatic versioning
+        save_dir=predict_model_dir,
+        name=f"{dataset_name}/{run_prefix}",  # Combine dataset and hyperparameters in name
+        version=None,  # Auto-versioning to avoid overwrites,
     )
 
 
@@ -177,13 +215,13 @@ def main():
     model = setup_model(config, data_module)
     print("Model setup complete")
     
-    # Setup callbacks
-    callbacks = setup_callbacks(config, args.output_dir)
-    print("Callbacks setup complete")
-    
     # Setup logger
     logger = setup_logger(config, args.output_dir)
     print("Logger setup complete")
+    
+    # Setup callbacks (needs logger for experiment directory)
+    callbacks = setup_callbacks(config, args.output_dir, logger)
+    print("Callbacks setup complete")
     
     # Setup trainer
     trainer_config = config.get('trainer', {})

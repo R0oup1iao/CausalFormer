@@ -99,11 +99,146 @@ python test_lightning.py
 python interpret_lightning.py -c config/config_lorenz.json -m saved/models/your_model.ckpt
 
 # 使用真实因果图进行评估
-python interpret_lightning.py -c config/config_lorenz.json -m saved/models/your_model.ckpt -g data/lorenz96/groundtruth.csv
+python interpret_lightning.py -c config/config_lorenz.json -m saved/lightning_models/checkpoints/best_model-v4.ckpt -g data/lorenz96/groundtruth.csv
 
 # 指定输出目录
 python interpret_lightning.py -c config/config_lorenz.json -m saved/models/your_model.ckpt --output_dir saved/causal_results
 ```
+
+## 新模型保存系统
+
+### 问题背景
+
+之前的模型保存系统存在以下问题：
+- 所有模型都保存为 `best_model-v{数字}.ckpt`，无法区分不同配置
+- 无法从文件名看出使用了哪个配置文件
+- `interpret_lightning.py` 难以运行，因为不知道模型对应的配置
+
+### 新系统解决方案
+
+#### 1. 清晰的目录结构
+
+**预测模型保存位置**：
+```
+saved/predict_model/
+└── {dataset_name}/               # 数据集名称，如 "lorenz96"
+    └── {run_name}/               # 运行名称，如 "lr0.01_d512_h8"
+        ├── version_0/            # 自动版本号，避免覆盖
+        │   ├── events.out.tfevents...
+        │   ├── hparams.yaml      # Lightning 自动生成的超参数
+        │   ├── config.json       # 我们额外保存的 JSON 配置副本
+        │   └── best_model-{epoch}-{val_loss}.ckpt  # 模型文件
+        ├── version_1/            # 第二次运行
+        │   └── ...
+        └── version_2/            # 第三次运行
+            └── ...
+```
+
+**因果发现结果保存位置**：
+```
+saved/causal_discovery/
+└── {dataset_name}/               # 数据集名称，如 "lorenz96"
+    └── {run_name}/               # 运行名称，如 "lr0.01_d512_h8"
+        ├── version_0/            # 自动版本号，避免覆盖
+        │   ├── events.out.tfevents...
+        │   └── causal_discovery_results.csv
+        ├── version_1/            # 第二次运行
+        │   └── ...
+        └── version_2/            # 第三次运行
+            └── ...
+```
+
+#### 2. 智能命名系统
+
+- **实验名称** = 数据集名称（从数据目录自动提取）
+- **运行名称** = 超参数组合（如 `lr0.01_d512_h8`）
+- **模型文件名** = `best_model-{epoch}-{val_loss}.ckpt`
+
+#### 3. 自动配置管理
+
+- 训练时自动保存配置到实验目录
+- `interpret_lightning.py` 自动查找模型对应的配置
+- 无需手动维护多个配置文件
+
+### 使用方法
+
+#### 训练模型（与之前相同）
+
+```bash
+python train_lightning.py -c config/config_lorenz.json
+```
+
+**新特性**：
+- 模型会保存在 `saved/predict_model/lorenz96/lr0.01_d512_h8/version_0/` 目录
+- 自动生成 `config.json` 副本
+- 模型文件名为 `best_model-epoch50-val0.0123.ckpt`
+- 多次运行不会覆盖：`version_0`, `version_1`, `version_2`...
+
+#### 因果发现（改进版）
+
+**方法1：自动配置识别（推荐）**
+```bash
+python interpret_lightning.py -m saved/predict_model/lorenz96/lr0.01_d512_h8/version_0/best_model-epoch50-val0.0123.ckpt
+```
+
+系统会自动：
+1. 从模型目录找到 `config.json`
+2. 从模型文件加载保存的超参数
+3. 验证配置一致性
+
+**方法2：手动指定配置（向后兼容）**
+```bash
+python interpret_lightning.py -c config/config_lorenz.json -m saved/predict_model/lorenz96/lr0.01_d512_h8/version_0/best_model-epoch50-val0.0123.ckpt
+```
+
+### 技术实现
+
+#### 主要改进
+
+1. **`train_lightning.py`**:
+   - `setup_logger()`: 智能命名实验和运行
+   - `setup_callbacks()`: 模型保存到实验目录
+   - `ConfigSaverCallback`: 自动保存配置副本
+
+2. **`interpret_lightning.py`**:
+   - `find_model_config()`: 自动查找配置
+   - `load_trained_model()`: 智能模型加载
+   - `configs_match()`: 配置一致性验证
+
+#### 向后兼容性
+
+- 现有训练命令无需修改
+- 现有模型文件仍然可以加载
+- 提供了回退机制
+
+### 优势
+
+1. **清晰的命名**: 从文件名就能看出模型信息
+2. **自动配置管理**: 无需手动匹配模型和配置
+3. **符合标准**: 使用 Lightning 的 `save_hyperparameters()`
+4. **易于管理**: 删除实验时配置和模型一起删除
+5. **向后兼容**: 现有代码无需大改
+
+### 示例
+
+查看 `demo_new_system.py` 了解完整演示：
+```bash
+python demo_new_system.py
+```
+
+### 故障排除
+
+#### 如果自动配置查找失败
+
+1. 检查模型文件是否存在
+2. 检查实验目录是否有 `config.json` 或 `hparams.yaml`
+3. 使用手动配置回退：`-c config_file.json`
+
+#### 如果模型加载失败
+
+1. 确保 PyTorch Lightning 版本兼容
+2. 检查模型文件是否完整
+3. 使用调试模式：`--debug`
 
 ## 文件结构
 
